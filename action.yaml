@@ -1,5 +1,8 @@
 name: Bypass Cloudflare for Github Action
 description: Manages IP whitelisting in Cloudflare to make sure github action server can access cloudflare proxied host.
+branding:
+  icon: shield-off
+  color: blue
 inputs:
   cf_zone_id:
     description: "Cloudflare Zone ID"
