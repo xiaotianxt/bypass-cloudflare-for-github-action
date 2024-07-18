@@ -1,6 +1,14 @@
-# Bypass Cloudflare for GitHub Action
+<h1 align='center'>
+<samp>Bypass Cloudflare for GitHub Action</samp>
+</h1>
 
-This GitHub Action manages IP whitelisting in Cloudflare to ensure that GitHub Action servers can access Cloudflare proxied hosts. This is particularly useful for workflows that require API access to servers behind Cloudflare protection.
+<p align='center'>
+  <samp>Never receive 403 Forbidden from Cloudflare again.</samp>
+</p>
+
+Requests from github action server to a Cloudflare proxied host may be blocked by [Cloudflare's Web Application Firewall(WAF)](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/4xx-client-error/) or [Bot Fight Mode](https://developers.cloudflare.com/bots/get-started/free/).
+
+This action automatically adds the public IP of the GitHub Action runner to Cloudflare's firewall [IP Access rules](https://developers.cloudflare.com/waf/tools/ip-access-rules/).
 
 ## Features
 
