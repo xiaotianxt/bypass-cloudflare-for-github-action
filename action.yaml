@@ -7,8 +7,8 @@ inputs:
   cf_zone_id:
     description: "Cloudflare Zone ID"
     required: true
-  cf_api_key:
-    description: "Cloudflare API Key"
+  cf_api_token:
+    description: "Cloudflare API Token"
     required: true
 outputs:
   rule_id:
@@ -24,7 +24,6 @@ runs:
         result=$(curl https://ipinfo.io/json)
         ip=$(echo $result | jq -r '.ip')
         echo "public_ip=$ip" >> $GITHUB_ENV
-
     - name: Make CF API request and extract Rules ID
       shell: bash
       id: extract_id
@@ -33,14 +32,13 @@ runs:
         response=$(curl --request POST \
           --url https://api.cloudflare.com/client/v4/zones/${{ inputs.cf_zone_id }}/firewall/access_rules/rules \
           --header 'Content-Type: application/json' \
-          --header 'Authorization: Bearer ${{ inputs.cf_api_key }}' \
+          --header 'Authorization: Bearer ${{ inputs.cf_api_token }}' \
           --data '{"mode":"whitelist","configuration":{"target":"ip","value":"'"$ipv4"'"},"notes":"Github Action IP for API ACCESS"}')
         echo "Response: $response"
         id=$(echo $response | jq -r '.result.id')
         echo "Extracted ID: $id"
         echo "rule_id=$id" >> $GITHUB_ENV
         echo "rule_id=$id" >> $GITHUB_OUTPUT
-
     - name: Wait for IP to appear in Access Rules
       shell: bash
       id: wait_for_ip
@@ -54,7 +52,7 @@ runs:
           response=$(curl --request GET \
             --url https://api.cloudflare.com/client/v4/zones/${{ inputs.cf_zone_id }}/firewall/access_rules/rules \
             --header 'Content-Type: application/json' \
-            --header 'Authorization: Bearer ${{ inputs.cf_api_key }}')
+            --header 'Authorization: Bearer ${{ inputs.cf_api_token }}')
           ip_in_rules=$(echo $response | jq -r --arg ip "$ipv4" '[.result[] | select(.configuration.value == $ip)] | length')
           if [ "$ip_in_rules" -gt 0 ]; then
             echo "IP $ipv4 is now whitelisted."
@@ -69,12 +67,10 @@ runs:
           echo "Failed to verify IP $ipv4 in access rules after $max_retries retries."
           exit 1
         fi
-
     - name: Delete IP from Access Rules
       uses: gacts/run-and-post-run@v1
       with:
         post: |
           rule_id=${{ env.rule_id }}
           echo "Deleting rule with ID: $rule_id"
-          curl --request DELETE --url https://api.cloudflare.com/client/v4/zones/${{ inputs.cf_zone_id }}/firewall/access_rules/rules/$rule_id --header 'Content-Type: application/json' --header 'Authorization: Bearer ${{ inputs.cf_api_key }}' || exit 1
-
+          curl --request DELETE --url https://api.cloudflare.com/client/v4/zones/${{ inputs.cf_zone_id }}/firewall/access_rules/rules/$rule_id --header 'Content-Type: application/json' --header 'Authorization: Bearer ${{ inputs.cf_api_token }}' || exit 1
