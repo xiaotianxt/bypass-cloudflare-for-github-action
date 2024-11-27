@@ -50,13 +50,13 @@ runs:
         while [ $count -lt $max_retries ]; do
           sleep $retry_interval
           response=$(curl --request GET \
-            --url https://api.cloudflare.com/client/v4/zones/${{ inputs.cf_zone_id }}/firewall/access_rules/rules \
+            --url https://api.cloudflare.com/client/v4/zones/${{ inputs.cf_zone_id }}/firewall/access_rules/rules?configuration.value=$ipv4 \
             --header 'Content-Type: application/json' \
             --header 'Authorization: Bearer ${{ inputs.cf_api_token }}')
-          ip_in_rules=$(echo $response | jq -r --arg ip "$ipv4" '[.result[] | select(.configuration.value == $ip)] | length')
+          ip_in_rules=$(echo $response | jq -r '.result | length')
           if [ "$ip_in_rules" -gt 0 ]; then
             echo "IP $ipv4 is now whitelisted."
-            rule_id=$(echo $response | jq -r --arg ip "$ipv4" '.result[] | select(.configuration.value == $ip) | .id')
+            rule_id=$(echo $response | jq -r '.result[0].id')
             echo "rule_id=$rule_id" >> $GITHUB_OUTPUT
             break
           fi
