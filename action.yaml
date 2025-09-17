@@ -1,8 +1,11 @@
 name: Bypass Cloudflare for Github Action
+
 description: Manages IP whitelisting in Cloudflare to make sure github action server can access cloudflare proxied host.
+
 branding:
   icon: shield-off
   color: blue
+
 inputs:
   cf_zone_id:
     description: "Cloudflare Zone ID"
@@ -10,10 +13,12 @@ inputs:
   cf_api_token:
     description: "Cloudflare API Token"
     required: true
+
 outputs:
   rule_id:
     value: ${{ env.rule_id }}
     description: "The ID of the created access rule"
+
 runs:
   using: "composite"
   steps:
@@ -21,9 +26,9 @@ runs:
       shell: bash
       id: ip
       run: |
-        result=$(curl https://ipinfo.io/json)
-        ip=$(echo $result | jq -r '.ip')
+        ip=$(curl -s https://cip.cc)
         echo "public_ip=$ip" >> $GITHUB_ENV
+
     - name: Make CF API request and extract Rules ID
       shell: bash
       id: extract_id
@@ -39,6 +44,7 @@ runs:
         echo "Extracted ID: $id"
         echo "rule_id=$id" >> $GITHUB_ENV
         echo "rule_id=$id" >> $GITHUB_OUTPUT
+
     - name: Wait for IP to appear in Access Rules
       shell: bash
       id: wait_for_ip
@@ -67,6 +73,7 @@ runs:
           echo "Failed to verify IP $ipv4 in access rules after $max_retries retries."
           exit 1
         fi
+
     - name: Delete IP from Access Rules
       uses: gacts/run-and-post-run@v1
       with:
