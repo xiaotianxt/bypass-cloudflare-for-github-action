@@ -26,8 +26,8 @@ runs:
       shell: bash
       id: ip
       run: |
-        ip=$(curl -s https://cip.cc)
-        echo "public_ip=$ip" >> $GITHUB_ENV
+        ip=$(curl -s https://ipinfo.now)
+        echo "Detected IP: $ip"
 
     - name: Make CF API request and extract Rules ID
       shell: bash
