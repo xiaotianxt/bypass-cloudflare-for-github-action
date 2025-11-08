@@ -5,6 +5,9 @@
   <samp>Never receive 403 Forbidden from Cloudflare again.</samp>
 </p>
 
+> [!NOTE]
+> Version `v2.0.0` addresses Cloudflare API changes affecting Free plan users. It includes breaking changes, such as updated API token permissions. If you are on a paid Cloudflare plan and the old workflow still works for you, continue using `v1.1.1`.
+
 Requests from GitHub Action servers to a Cloudflare proxied host may be blocked by [Cloudflare's Web Application Firewall(WAF)](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/4xx-client-error/) or [Bot Fight Mode](https://developers.cloudflare.com/bots/get-started/free/).
 This action automatically manages IP whitelisting by creating a Cloudflare custom IP list and WAF rule to bypass Cloudflare protections for GitHub Actions runners.
 
@@ -58,7 +61,8 @@ This Action requires a Cloudflare API Token, not the Global API Key. To create a
 5. Set the token to access the zone you're working with.
 6. Create the token and save it securely.
 
-> **Important:** The first time this workflow runs, the Custom WAF Rule is created. After the first run, you can remove the `Zone WAF > Edit` permission from the API token.
+> [!IMPORTANT]
+> The first time this workflow runs, the Custom WAF Rule is created. After the first run, you can remove the `Zone WAF > Edit` permission from the API token.
 
 ## Limitations
 
