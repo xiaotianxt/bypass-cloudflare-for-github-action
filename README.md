@@ -35,7 +35,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
       - name: Bypass Cloudflare for GitHub Action
-        uses: xiaotianxt/bypass-cloudflare-for-github-action@v1.1.1
+        uses: xiaotianxt/bypass-cloudflare-for-github-action@v2.0.0
         with:
           cf_account_id: ${{ secrets.CF_ACCOUNT_ID }}
           cf_zone_id: ${{ secrets.CF_ZONE_ID }}
