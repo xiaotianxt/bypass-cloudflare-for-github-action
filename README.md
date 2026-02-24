@@ -24,7 +24,7 @@ This action automatically manages IP whitelisting by creating a Cloudflare custo
 | `cf_account_id`          | Cloudflare Account ID                                                                            | true     |         |
 | `cf_zone_id`             | Cloudflare Zone ID                                                                               | true     |         |
 | `cf_api_token`           | Cloudflare API Token                                                                             | true     |         |
-| `disable_bot_fight_mode` | Disable Bot Fight Mode during workflow execution (requires Zone Settings > Edit permission)      | false    | `false` |
+| `disable_bot_fight_mode` | Disable Bot Fight Mode during workflow execution (requires Bot Management > Edit and Zone > Read permissions) | false    | `false` |
 | `bfm_propagation_delay`  | Seconds to wait after disabling Bot Fight Mode for settings to propagate                         | false    | `10`     |
 
 ## Usage
@@ -74,7 +74,7 @@ jobs:
 ```
 
 > [!NOTE]
-> The `disable_bot_fight_mode` option requires **Zone Settings > Edit** permission on your API token. The original BFM state is automatically restored after the job completes.
+> The `disable_bot_fight_mode` option requires **Bot Management > Edit** and **Zone > Read** permissions on your API token (the endpoint used is `/zones/{zone_id}/bot_management`). The original BFM state is automatically restored after the job completes.
 
 ## Set Repo Secrets
 Remember to add your Cloudflare Account ID, Zone ID, and API Token to your GitHub repository > Secrets and Variables > Actions as `CF_ACCOUNT_ID`, `CF_ZONE_ID`, and `CF_API_TOKEN` respectively.
@@ -87,7 +87,8 @@ This Action requires a Cloudflare API Token, not the Global API Key. To create a
 4. Create a custom token with the following permissions:
    - **Account** > **Account Filter Lists** > **Edit** (required for IP list management)
    - **Zone** > **Zone WAF** > **Edit** (required for custom WAF rules)
-   - **Zone** > **Zone Settings** > **Edit** (required only if using `disable_bot_fight_mode`)
+   - **Zone** > **Bot Management** > **Edit** (required only if using `disable_bot_fight_mode`)
+   - **Zone** > **Zone** > **Read** (required only if using `disable_bot_fight_mode`)
 5. Set the token to access the zone you're working with.
 6. Create the token and save it securely.
 

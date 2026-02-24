@@ -14,7 +14,7 @@ inputs:
     description: "Cloudflare API Token"
     required: true
   disable_bot_fight_mode:
-    description: "Disable Bot Fight Mode during workflow execution (requires Zone Settings > Edit permission)"
+    description: "Disable Bot Fight Mode during workflow execution (requires Bot Management > Edit and Zone > Read permissions)"
     required: false
     default: "false"
   bfm_propagation_delay:
@@ -213,7 +213,7 @@ runs:
         if [ "$http_code" != "200" ]; then
           echo "Error: Failed to get Bot Fight Mode settings. HTTP code: $http_code"
           echo "Response: $body"
-          echo "Note: This feature requires Zone Settings > Edit permission on your API token."
+          echo "Note: This feature requires Bot Management > Edit and Zone > Read permissions on your API token. See: https://developers.cloudflare.com/api/resources/bot_management/"
           exit 1
         fi
 
