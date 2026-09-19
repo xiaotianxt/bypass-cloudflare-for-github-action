@@ -1,3 +1,15 @@
+## Unreleased
+
+### Fixed
+- Validate HTTP status, API success, and result shape for every Cloudflare request, including cleanup and Bot Fight Mode restoration (#17).
+- Report Cloudflare error codes/messages and relevant permission/resource-scope guidance instead of failing with `Cannot iterate over null`.
+- Register cleanup/restoration before mutations, and stop reporting success when post-run API requests fail.
+- Validate required secrets, IDs, boolean/delay inputs, and the runner IP before modifying Cloudflare state.
+
+### Added
+- Shared API request handling with bounded network requests, escaped error annotations, and no automatic mutation retries.
+- Offline API regression tests and CI; updated token setup and troubleshooting documentation.
+
 ## v2.1.0
 
 ### Added

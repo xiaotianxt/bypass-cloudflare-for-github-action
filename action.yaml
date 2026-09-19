@@ -5,313 +5,191 @@ branding:
   color: blue
 inputs:
   cf_account_id:
-    description: "Cloudflare Account ID"
+    description: Cloudflare Account ID
     required: true
   cf_zone_id:
-    description: "Cloudflare Zone ID"
+    description: Cloudflare Zone ID
     required: true
   cf_api_token:
-    description: "Cloudflare API Token"
+    description: Cloudflare API Token
     required: true
   disable_bot_fight_mode:
-    description: "Disable Bot Fight Mode during workflow execution (requires Bot Management > Edit and Zone > Read permissions)"
+    description: Disable Bot Fight Mode during workflow execution (requires Bot Management > Edit and Zone > Read permissions)
     required: false
-    default: "false"
+    default: 'false'
   bfm_propagation_delay:
-    description: "Seconds to wait after disabling Bot Fight Mode for settings to propagate"
+    description: Seconds to wait after disabling Bot Fight Mode for settings to propagate
     required: false
-    default: "10"
+    default: '10'
 runs:
-  using: "composite"
+  using: composite
   steps:
-    - name: Get Runner Public IP
+    - name: Validate Inputs and Get Runner Public IP
       shell: bash
-      id: get_ip
+      env:
+        CF_ACCOUNT_ID: ${{ inputs.cf_account_id }}
+        CF_ZONE_ID: ${{ inputs.cf_zone_id }}
+        CF_API_TOKEN: ${{ inputs.cf_api_token }}
+        DISABLE_BFM: ${{ inputs.disable_bot_fight_mode }}
+        BFM_DELAY: ${{ inputs.bfm_propagation_delay }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
-        ip=$(curl -s https://api64.ipify.org)
-        echo "public_ip=$ip" >> $GITHUB_ENV
+        source "$ACTION_PATH/scripts/cloudflare.sh"
+        for name in CF_ACCOUNT_ID CF_ZONE_ID; do
+          if [[ ! "${!name}" =~ ^[a-fA-F0-9]{32}$ ]]; then
+            cf_error "$name must be a 32-character hexadecimal Cloudflare ID. Check your Actions secrets."
+            exit 1
+          fi
+        done
+        if [[ -z "$CF_API_TOKEN" ]]; then
+          cf_error 'cf_api_token is empty. Check your Actions secrets (including fork PR secret availability).'
+          exit 1
+        fi
+        if [[ "$DISABLE_BFM" != true && "$DISABLE_BFM" != false ]]; then
+          cf_error 'disable_bot_fight_mode must be true or false.'
+          exit 1
+        fi
+        if [[ ! "$BFM_DELAY" =~ ^[0-9]+$ ]]; then
+          cf_error 'bfm_propagation_delay must be a non-negative integer in seconds.'
+          exit 1
+        fi
+        if ! ip=$(curl --fail --silent --show-error --connect-timeout 15 --max-time 30 https://api64.ipify.org); then
+          cf_error 'Failed to retrieve the runner public IP from ipify.'
+          exit 1
+        fi
+        # Validate IPv4/IPv6 and prevent multiline data from entering GITHUB_ENV.
+        if ! python3 -c 'import ipaddress, sys; ipaddress.ip_address(sys.argv[1])' "$ip" 2>/dev/null; then
+          cf_error 'ipify returned an invalid public IP address.'
+          exit 1
+        fi
+        echo "public_ip=$ip" >> "$GITHUB_ENV"
     - name: Check Existing CF IP List (Lists API)
       shell: bash
       id: check_ip_list
+      env:
+        CF_ACCOUNT_ID: ${{ inputs.cf_account_id }}
+        CF_API_TOKEN: ${{ inputs.cf_api_token }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
+        source "$ACTION_PATH/scripts/cloudflare.sh"
         list_name="bypass_cloudflare_for_github_action_list"
-        response=$(curl --request GET \
-          --url "https://api.cloudflare.com/client/v4/accounts/${{ inputs.cf_account_id }}/rules/lists" \
-          --header 'Content-Type: application/json' \
-          --header "Authorization: Bearer ${{ inputs.cf_api_token }}")
-
-        list_id=$(echo "$response" | jq -r --arg name "$list_name" '.result[] | select(.name == $name) | .id' | head -n1)
-
-        echo "list_created=false" >> $GITHUB_ENV
-
-        if [ -n "$list_id" ] && [ "$list_id" != "null" ]; then
+        response=$(cf_request GET "/accounts/$CF_ACCOUNT_ID/rules/lists" '.result | type == "array" and all(.[]; (.name | type == "string") and (.id | type == "string" and test("^[a-fA-F0-9]{32}$")))')
+        list_id=$(jq -r --arg name "$list_name" '[.result[] | select(.name == $name) | .id] | first // empty' <<< "$response")
+        echo 'list_created=false' >> "$GITHUB_ENV"
+        if [[ -n "$list_id" ]]; then
           echo "Found existing list '$list_name' with ID: $list_id"
-          echo "list_exists=true" >> $GITHUB_ENV
-          echo "list_id=$list_id" >> $GITHUB_ENV
-          echo "list_id=$list_id" >> $GITHUB_OUTPUT
+          echo 'list_exists=true' >> "$GITHUB_ENV"
+          echo "list_id=$list_id" >> "$GITHUB_ENV"
+          echo "list_id=$list_id" >> "$GITHUB_OUTPUT"
         else
           echo "List '$list_name' not found. It will be created."
-          echo "list_exists=false" >> $GITHUB_ENV
-          echo "list_id=" >> $GITHUB_ENV
+          echo 'list_exists=false' >> "$GITHUB_ENV"
+          echo 'list_id=' >> "$GITHUB_ENV"
         fi
     - name: (Setup only) Create CF IP List (Lists API)
       shell: bash
       id: create_ip_list
       if: env.list_exists != 'true'
+      env:
+        CF_ACCOUNT_ID: ${{ inputs.cf_account_id }}
+        CF_API_TOKEN: ${{ inputs.cf_api_token }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
-        list_name="bypass_cloudflare_for_github_action_list"
-        list_description="Generated by xiaotianxt/bypass-cloudflare-for-github-action. Empty list by default."
-
-        body=$(jq -n --arg name "$list_name" --arg desc "$list_description" '{kind: "ip", name: $name, description: $desc}')
-
-        response=$(curl --request POST \
-          --url "https://api.cloudflare.com/client/v4/accounts/${{ inputs.cf_account_id }}/rules/lists" \
-          --header 'Content-Type: application/json' \
-          --header "Authorization: Bearer ${{ inputs.cf_api_token }}" \
-          --data "$body")
-
-        echo "Response: $response"
-        list_id=$(echo $response | jq -r '.result.id')
-
-        if [ "$list_id" = "null" ] || [ -z "$list_id" ]; then
-          echo "Error: Failed to create list. Response: $response"
-          exit 1
-        fi
-
-        echo "Created List with ID: $list_id"
-        echo "list_id=$list_id" >> $GITHUB_ENV
-        echo "list_id=$list_id" >> $GITHUB_OUTPUT
-        echo "list_exists=true" >> $GITHUB_ENV
-        echo "list_created=true" >> $GITHUB_ENV
+        source "$ACTION_PATH/scripts/cloudflare.sh"
+        body=$(jq -n '{kind: "ip", name: "bypass_cloudflare_for_github_action_list", description: "Generated by xiaotianxt/bypass-cloudflare-for-github-action. Empty list by default."}')
+        response=$(cf_request POST "/accounts/$CF_ACCOUNT_ID/rules/lists" '.result.id | type == "string" and test("^[a-fA-F0-9]{32}$")' "$body")
+        list_id=$(jq -r '.result.id' <<< "$response")
+        echo "Created list with ID: $list_id"
+        echo "list_id=$list_id" >> "$GITHUB_ENV"
+        echo "list_id=$list_id" >> "$GITHUB_OUTPUT"
+        echo 'list_exists=true' >> "$GITHUB_ENV"
+        echo 'list_created=true' >> "$GITHUB_ENV"
     - name: (Setup only) Create Bypass Rule for IP List (Rulesets API)
       shell: bash
       id: create_waf_rule
       if: env.list_created == 'true'
+      env:
+        CF_ZONE_ID: ${{ inputs.cf_zone_id }}
+        CF_API_TOKEN: ${{ inputs.cf_api_token }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
-        zone_id="${{ inputs.cf_zone_id }}"
-        list_name="bypass_cloudflare_for_github_action_list"
-
-        if [ -z "$zone_id" ]; then
-          echo "Error: cf_zone_id is required for setup mode"
-          exit 1
-        fi
-
-        # Following documentation here: https://developers.cloudflare.com/waf/custom-rules/create-api/
-        # Get the entry point ruleset for http_request_firewall_custom phase
-        phase_name="http_request_firewall_custom"
-        response=$(curl --request GET \
-          --url "https://api.cloudflare.com/client/v4/zones/$zone_id/rulesets/phases/$phase_name/entrypoint" \
-          --header 'Content-Type: application/json' \
-          --header "Authorization: Bearer ${{ inputs.cf_api_token }}" \
-          --write-out "\n%{http_code}" \
-          --silent)
-
-        http_code=$(echo "$response" | tail -n1)
-        body=$(echo "$response" | sed '$d')
-
-        if [ "$http_code" = "200" ]; then
-          # Ruleset exists, extract ruleset ID and add rule to it
-          ruleset_id=$(echo "$body" | jq -r '.result.id')
-          echo "Found existing ruleset with ID: $ruleset_id"
-          
-          # Build rule payload using jq
-          expression="ip.src in \$$list_name"
-          rule_payload=$(jq -n \
-            --arg desc "Bypass for GitHub Actions" \
-            --arg expr "$expression" \
-            '{
-              description: $desc,
-              expression: $expr,
-              action: "skip",
-              action_parameters: {
-                phases: ["http_request_firewall_managed", "http_ratelimit", "http_request_sbfm"],
-                ruleset: "current"
-              },
-              position: {
-                index: 1
-              }
-            }')
-          
-          response=$(curl --request POST \
-            --url "https://api.cloudflare.com/client/v4/zones/$zone_id/rulesets/$ruleset_id/rules" \
-            --header 'Content-Type: application/json' \
-            --header "Authorization: Bearer ${{ inputs.cf_api_token }}" \
-            --data "$rule_payload")
-          
-          echo "Response: $response"
-          rule_id=$(echo "$response" | jq -r '.result.id')
-          
-          if [ "$rule_id" = "null" ] || [ -z "$rule_id" ]; then
-            echo "Error: Failed to create rule. Response: $response"
-            exit 1
-          fi
-          
-          echo "Created WAF rule with ID: $rule_id"
-        elif [ "$http_code" = "404" ]; then
-          # Ruleset doesn't exist, create it with the rule
-          echo "Ruleset does not exist, creating new ruleset with rule"
-          
-          # Build ruleset payload with rule using jq
-          expression="ip.src in \$$list_name"
-          ruleset_payload=$(jq -n \
-            --arg desc "Bypass for GitHub Actions" \
-            --arg expr "$expression" \
-            '{
-              kind: "zone",
-              name: "default",
-              phase: "http_request_firewall_custom",
-              rules: [{
-                description: $desc,
-                expression: $expr,
-                action: "skip",
-                action_parameters: {
-                  phases: ["http_request_firewall_managed", "http_ratelimit", "http_request_sbfm"],
-                  ruleset: "current"
-                },
-                position: {
-                  index: 1
-                }
-              }]
-            }')
-          
-          response=$(curl --request POST \
-            --url "https://api.cloudflare.com/client/v4/zones/$zone_id/rulesets" \
-            --header 'Content-Type: application/json' \
-            --header "Authorization: Bearer ${{ inputs.cf_api_token }}" \
-            --data "$ruleset_payload")
-          
-          echo "Response: $response"
-          ruleset_id=$(echo "$response" | jq -r '.result.id')
-          
-          if [ "$ruleset_id" = "null" ] || [ -z "$ruleset_id" ]; then
-            echo "Error: Failed to create ruleset. Response: $response"
-            exit 1
-          fi
-          
-          echo "Created ruleset with ID: $ruleset_id"
+        source "$ACTION_PATH/scripts/cloudflare.sh"
+        phase_name=http_request_firewall_custom
+        response=$(cf_entrypoint "/zones/$CF_ZONE_ID/rulesets/phases/$phase_name/entrypoint")
+        ruleset_id=$(jq -r '.result.id // empty' <<< "$response")
+        rule_payload=$(jq -n '{
+          description: "Bypass for GitHub Actions",
+          expression: "ip.src in $bypass_cloudflare_for_github_action_list",
+          action: "skip",
+          action_parameters: {
+            phases: ["http_request_firewall_managed", "http_ratelimit", "http_request_sbfm"],
+            ruleset: "current"
+          },
+          position: {index: 1}
+        }')
+        if [[ -n "$ruleset_id" ]]; then
+          response=$(cf_request POST "/zones/$CF_ZONE_ID/rulesets/$ruleset_id/rules" '.result.id | type == "string" and length > 0' "$rule_payload")
         else
-          echo "Error: Unexpected response when getting ruleset. HTTP code: $http_code, Response: $body"
-          exit 1
+          ruleset_payload=$(jq -n --argjson rule "$rule_payload" --arg phase "$phase_name" '{kind: "zone", name: "default", phase: $phase, rules: [$rule]}')
+          response=$(cf_request POST "/zones/$CF_ZONE_ID/rulesets" '.result.id | type == "string" and length > 0' "$ruleset_payload")
         fi
-    - name: Save Bot Fight Mode State and Disable
-      shell: bash
-      id: manage_bfm
-      if: inputs.disable_bot_fight_mode == 'true'
-      run: |
-        zone_id="${{ inputs.cf_zone_id }}"
-
-        echo "Fetching current Bot Fight Mode settings..."
-        response=$(curl --silent --show-error --write-out '\n%{http_code}' \
-          --request GET \
-          --url "https://api.cloudflare.com/client/v4/zones/$zone_id/bot_management" \
-          --header 'Content-Type: application/json' \
-          --header "Authorization: Bearer ${{ inputs.cf_api_token }}")
-
-        http_code=$(echo "$response" | tail -n1)
-        body=$(echo "$response" | sed '$d')
-
-        if [ "$http_code" != "200" ]; then
-          echo "Error: Failed to get Bot Fight Mode settings. HTTP code: $http_code"
-          echo "Response: $body"
-          echo "Note: This feature requires Bot Management > Edit and Zone > Read permissions on your API token. See: https://developers.cloudflare.com/api/resources/bot_management/"
-          exit 1
-        fi
-
-        # Save original state for restoration
-        fight_mode=$(echo "$body" | jq -r '.result.fight_mode // false')
-        enable_js=$(echo "$body" | jq -r '.result.enable_js // false')
-
-        echo "Current Bot Fight Mode state: fight_mode=$fight_mode, enable_js=$enable_js"
-        echo "bfm_original_fight_mode=$fight_mode" >> $GITHUB_ENV
-        echo "bfm_original_enable_js=$enable_js" >> $GITHUB_ENV
-        echo "bfm_was_disabled=true" >> $GITHUB_ENV
-
-        # Disable Bot Fight Mode
-        echo "Disabling Bot Fight Mode..."
-        response=$(curl --silent --show-error --write-out '\n%{http_code}' \
-          --request PUT \
-          --url "https://api.cloudflare.com/client/v4/zones/$zone_id/bot_management" \
-          --header 'Content-Type: application/json' \
-          --header "Authorization: Bearer ${{ inputs.cf_api_token }}" \
-          --data '{"fight_mode":false,"enable_js":false}')
-
-        http_code=$(echo "$response" | tail -n1)
-        body=$(echo "$response" | sed '$d')
-
-        if [ "$http_code" != "200" ]; then
-          echo "Error: Failed to disable Bot Fight Mode. HTTP code: $http_code"
-          echo "Response: $body"
-          exit 1
-        fi
-
-        echo "Bot Fight Mode disabled successfully."
-    - name: Wait for Bot Fight Mode Settings to Propagate
+        echo "Configured bypass ruleset: $(jq -r '.result.id' <<< "$response")"
+    - name: Save Bot Fight Mode State
       shell: bash
       if: inputs.disable_bot_fight_mode == 'true'
+      env:
+        CF_ZONE_ID: ${{ inputs.cf_zone_id }}
+        CF_API_TOKEN: ${{ inputs.cf_api_token }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
-        delay="${{ inputs.bfm_propagation_delay }}"
-        echo "Waiting ${delay} seconds for Bot Fight Mode settings to propagate..."
-        sleep "$delay"
+        source "$ACTION_PATH/scripts/cloudflare.sh"
+        response=$(cf_request GET "/zones/$CF_ZONE_ID/bot_management" '(.result.fight_mode | type == "boolean") and (.result.enable_js | type == "boolean")')
+        echo "bfm_original_fight_mode=$(jq -r '.result.fight_mode' <<< "$response")" >> "$GITHUB_ENV"
+        echo "bfm_original_enable_js=$(jq -r '.result.enable_js' <<< "$response")" >> "$GITHUB_ENV"
+    # Register restoration BEFORE mutation, including an ambiguous network failure.
+    - name: Register Bot Fight Mode Restoration
+      uses: gacts/run-and-post-run@v1
+      if: inputs.disable_bot_fight_mode == 'true'
+      env:
+        CF_API_TOKEN: ${{ inputs.cf_api_token }}
+      with:
+        post: |
+          set -euo pipefail && \
+          source '${{ github.action_path }}/scripts/cloudflare.sh' && \
+          cf_request PUT '/zones/${{ inputs.cf_zone_id }}/bot_management' '.result.fight_mode == ${{ env.bfm_original_fight_mode }} and .result.enable_js == ${{ env.bfm_original_enable_js }}' '{"fight_mode":${{ env.bfm_original_fight_mode }},"enable_js":${{ env.bfm_original_enable_js }}}' > /dev/null && \
+          echo 'Bot Fight Mode restored successfully.'
+    - name: Disable Bot Fight Mode and Wait for Propagation
+      shell: bash
+      if: inputs.disable_bot_fight_mode == 'true'
+      env:
+        CF_ZONE_ID: ${{ inputs.cf_zone_id }}
+        CF_API_TOKEN: ${{ inputs.cf_api_token }}
+        BFM_DELAY: ${{ inputs.bfm_propagation_delay }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        source "$ACTION_PATH/scripts/cloudflare.sh"
+        cf_request PUT "/zones/$CF_ZONE_ID/bot_management" '.result.fight_mode == false and .result.enable_js == false' '{"fight_mode":false,"enable_js":false}' > /dev/null
+        echo "Bot Fight Mode disabled. Waiting $BFM_DELAY seconds for propagation."
+        sleep "$BFM_DELAY"
+    - name: Register IP List Cleanup
+      uses: gacts/run-and-post-run@v1
+      env:
+        CF_API_TOKEN: ${{ inputs.cf_api_token }}
+      with:
+        post: |
+          set -euo pipefail && \
+          source '${{ github.action_path }}/scripts/cloudflare.sh' && \
+          cf_request PUT '/accounts/${{ inputs.cf_account_id }}/rules/lists/${{ env.list_id }}/items' '.result.operation_id | type == "string" and length > 0' '[]' > /dev/null && \
+          echo 'Cloudflare accepted the asynchronous IP list cleanup operation.'
     - name: Add Runner IP to List (Lists API)
       shell: bash
       id: add_ip_to_list
+      env:
+        CF_ACCOUNT_ID: ${{ inputs.cf_account_id }}
+        CF_API_TOKEN: ${{ inputs.cf_api_token }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
-        list_id="${{ env.list_id }}"
-        ip="${{ env.public_ip }}"
-
-        if [ -z "$list_id" ] || [ -z "$ip" ]; then
-          echo "Error: Missing required variables"
-          exit 1
-        fi
-
-        payload_file=$(mktemp)
-        jq -nc --arg ip "$ip" --arg comment "GitHub Actions runner" '[{ip: $ip, comment: $comment}]' > "$payload_file"
-        echo "Replacing list $list_id with single IP: $ip"
-        echo "Payload file contents:" && cat "$payload_file"
-        response=$(curl --silent --show-error --write-out '\n%{http_code}' \
-          --request PUT \
-          --url "https://api.cloudflare.com/client/v4/accounts/${{ inputs.cf_account_id }}/rules/lists/$list_id/items" \
-          --header 'Content-Type: application/json' \
-          --header "Authorization: Bearer ${{ inputs.cf_api_token }}" \
-          --data @"$payload_file")
-        rm -f "$payload_file"
-        http_code=$(echo "$response" | tail -n1)
-        body=$(echo "$response" | sed '$d')
-        echo "HTTP status: $http_code"
-        echo "Response body: $body"
-
-        if [ "$http_code" != "200" ]; then
-          echo "Error: Failed to add IP to list. Response: $body"
-          exit 1
-        fi
-
-        operation_id=$(echo "$body" | jq -r '.result.operation_id // empty')
-        if [ -n "$operation_id" ]; then
-          echo "Operation ID: $operation_id"
-        fi
-        echo "List $list_id now contains only $ip"
-    - name: Clear List
-      uses: gacts/run-and-post-run@v1
-      with:
-        post: |
-          list_id="${{ env.list_id }}"
-          echo "Clearing list $list_id"
-          curl --request PUT \
-            --url "https://api.cloudflare.com/client/v4/accounts/${{ inputs.cf_account_id }}/rules/lists/$list_id/items" \
-            --header 'Content-Type: application/json' \
-            --header "Authorization: Bearer ${{ inputs.cf_api_token }}" \
-            --data '[]' \
-            || exit 1
-    - name: Restore Bot Fight Mode
-      uses: gacts/run-and-post-run@v1
-      if: inputs.disable_bot_fight_mode == 'true'
-      with:
-        post: |
-          echo "Restoring Bot Fight Mode to original state..."
-          curl --request PUT \
-            --url "https://api.cloudflare.com/client/v4/zones/${{ inputs.cf_zone_id }}/bot_management" \
-            --header 'Content-Type: application/json' \
-            --header "Authorization: Bearer ${{ inputs.cf_api_token }}" \
-            --data '{"fight_mode":${{ env.bfm_original_fight_mode }},"enable_js":${{ env.bfm_original_enable_js }}}' \
-            && echo "Bot Fight Mode restored successfully" \
-            || echo "Warning: Failed to restore Bot Fight Mode"
+        source "$ACTION_PATH/scripts/cloudflare.sh"
+        payload=$(jq -nc --arg ip "$public_ip" '[{ip: $ip, comment: "GitHub Actions runner"}]')
+        response=$(cf_request PUT "/accounts/$CF_ACCOUNT_ID/rules/lists/$list_id/items" '.result.operation_id | type == "string" and length > 0' "$payload")
+        echo "Cloudflare accepted the asynchronous IP list update: $(jq -r '.result.operation_id' <<< "$response")"
