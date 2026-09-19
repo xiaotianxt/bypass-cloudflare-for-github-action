@@ -24,6 +24,8 @@ class CloudflareTests(unittest.TestCase):
             response.write_text((body if isinstance(body, str) else json.dumps(body)) + f"\n{status}")
             env_file = root / "env"
             env_file.touch()
+            output_file = root / "output"
+            output_file.touch()
             env = {
                 **os.environ,
                 "CF_API_TOKEN": TOKEN,
@@ -44,7 +46,8 @@ curl() { cat "$FIXTURE"; return "$CURL_EXIT"; }
                 ["bash", "--noprofile", "--norc", "-euo", "pipefail", "-c", prefix + script],
                 env=env, capture_output=True, text=True,
             )
-            return result, env_file.read_text()
+            self.assertEqual(env_file.read_text(), "", "action state must not leak into job-global env")
+            return result, output_file.read_text()
 
     def request(self, body, status=200, **kwargs):
         return self.run_shell(
@@ -113,9 +116,9 @@ curl() { cat "$FIXTURE"; return "$CURL_EXIT"; }
 
     def test_list_lookup_empty_and_existing(self):
         script = next(s["run"] for s in ACTION["runs"]["steps"] if s.get("id") == "check_ip_list")
-        for lists, expected in (([], "list_exists=false"), ([{
+        for lists, expected in (([], "list_id=\n"), ([{
             "name": "bypass_cloudflare_for_github_action_list", "id": LIST
-        }], "list_exists=true")):
+        }], f"list_id={LIST}\n")):
             with self.subTest(lists=lists):
                 result, env = self.run_shell(script, {"success": True, "result": lists})
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -155,11 +158,26 @@ curl() { cat "$FIXTURE"; return "$CURL_EXIT"; }
                 self.assertNotIn("NETWORK_REACHED", result.stderr)
                 self.assertEqual(env, "")
 
-    def test_bfm_missing_state_is_not_assumed_false(self):
-        script = next(s["run"] for s in ACTION["runs"]["steps"] if s["name"] == "Save Bot Fight Mode State")
-        result, env = self.run_shell(script, {"success": True, "result": {"fight_mode": False}})
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(env, "")
+    def test_bfm_configuration_variants(self):
+        script = next(s["run"] for s in ACTION["runs"]["steps"] if s.get("id") == "bfm_state")
+        for configuration, expected in (
+            ({"fight_mode": True}, 'restore_payload={"fight_mode":true}\n'),
+            ({"fight_mode": True, "enable_js": True}, 'restore_payload={"fight_mode":true}\n'),
+            ({"fight_mode": False}, ""),
+            ({"enable_js": True, "sbfm_definitely_automated": "block"}, ""),
+            ({"auto_update_model": True, "bm_cookie_enabled": True}, ""),
+            ({"enable_js": True, "stale_zone_configuration": {"fight_mode": True}}, ""),
+            ({}, ""),
+        ):
+            with self.subTest(configuration=configuration):
+                result, outputs = self.run_shell(script, {"success": True, "result": configuration})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(outputs, expected)
+        for configuration in ({"fight_mode": None}, {"fight_mode": "true"}, None, []):
+            with self.subTest(configuration=configuration):
+                result, outputs = self.run_shell(script, {"success": True, "result": configuration})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(outputs, "")
 
     def test_cleanup_failures_do_not_announce_success(self):
         # gacts/run-and-post-run executes each logical line in a separate shell.
@@ -171,8 +189,9 @@ curl() { cat "$FIXTURE"; return "$CURL_EXIT"; }
                 script = step["with"]["post"]
                 replacements = {
                     "github.action_path": str(ROOT), "inputs.cf_zone_id": ZONE,
-                    "inputs.cf_account_id": ACCOUNT, "env.list_id": LIST,
-                    "env.bfm_original_fight_mode": "true", "env.bfm_original_enable_js": "false",
+                    "inputs.cf_account_id": ACCOUNT,
+                    "steps.check_ip_list.outputs.list_id || steps.create_ip_list.outputs.list_id": LIST,
+                    "steps.bfm_state.outputs.restore_payload": '{"fight_mode":true}',
                 }
                 for expression, value in replacements.items():
                     script = script.replace("${{ " + expression + " }}", value)
