@@ -28,6 +28,8 @@ This action automatically manages IP whitelisting by creating a Cloudflare custo
 | `bfm_propagation_delay`  | Seconds to wait after disabling Bot Fight Mode for settings to propagate                         | false    | `10`     |
 
 ## Usage
+The runner needs Bash, curl, jq, and Python 3 (for IPv4/IPv6 validation), available on GitHub-hosted Ubuntu runners.
+
 To use this action, create a workflow in your repository's `.github/workflows` directory. Below is an example workflow file:
 
 ```yaml
@@ -51,7 +53,9 @@ jobs:
 
 ### With Bot Fight Mode Bypass
 
-If you have [Super Bot Fight Mode (SBFM) or Bot Fight Mode (BFM)](https://developers.cloudflare.com/bots/get-started/super-bot-fight-mode/) enabled, WAF rules alone may not be sufficient as these modes [do not respect WAF skip rules](https://developers.cloudflare.com/bots/get-started/super-bot-fight-mode/). Use the `disable_bot_fight_mode` option to temporarily disable BFM during your workflow:
+[Free Bot Fight Mode (BFM)](https://developers.cloudflare.com/bots/get-started/free/) does not support WAF skip rules. Use `disable_bot_fight_mode` to temporarily disable it during your workflow.
+
+[Super Bot Fight Mode (SBFM)](https://developers.cloudflare.com/bots/get-started/super-bot-fight-mode/) **does** support skip rules: this action already skips the `http_request_sbfm` phase. You normally do not need `disable_bot_fight_mode` for SBFM. Enterprise Bot Management behavior depends on your configured rules; this option does not disable Enterprise protection globally.
 
 ```yaml
 name: Bypass Cloudflare with BFM Disabled
@@ -74,30 +78,61 @@ jobs:
 ```
 
 > [!NOTE]
-> The `disable_bot_fight_mode` option requires **Bot Management > Edit** and **Zone > Read** permissions on your API token (the endpoint used is `/zones/{zone_id}/bot_management`). The original BFM state is automatically restored after the job completes.
+> The `disable_bot_fight_mode` option requires **Bot Management > Edit** and **Zone > Read** permissions on your API token (the endpoint used is `/zones/{zone_id}/bot_management`). Only an explicitly enabled, boolean `fight_mode` is changed and restored after the job completes. If the configuration has no top-level `fight_mode` (as with SBFM/Enterprise), bot settings are left unchanged; missing fields are never assumed to be `false`. JavaScript detections (`enable_js`) and other bot settings are not changed.
 
 ## Set Repo Secrets
 Remember to add your Cloudflare Account ID, Zone ID, and API Token to your GitHub repository > Secrets and Variables > Actions as `CF_ACCOUNT_ID`, `CF_ZONE_ID`, and `CF_API_TOKEN` respectively.
 
 This Action requires a Cloudflare API Token, not the Global API Key. To create an API token:
 
-1. Log in to the Cloudflare dashboard and click into an account.
-2. On the right sidebar, go to "API" > "Get your API token".
-3. Click "Account API Tokens" > "Create Token" > "Create Custom Token".
+1. Log in to the Cloudflare dashboard.
+2. Open [My Profile > API Tokens](https://dash.cloudflare.com/profile/api-tokens) to create a user API token. Account-owned API tokens may also be used if available for your account.
+3. Click **Create Token** > **Create Custom Token**. Dashboard navigation can vary; the permissions and resource scopes below are what matter.
 4. Create a custom token with the following permissions:
    - **Account** > **Account Filter Lists** > **Edit** (required for IP list management)
    - **Zone** > **Zone WAF** > **Edit** (required for custom WAF rules)
    - **Zone** > **Bot Management** > **Edit** (required only if using `disable_bot_fight_mode`)
    - **Zone** > **Zone** > **Read** (required only if using `disable_bot_fight_mode`)
-5. Set the token to access the zone you're working with.
+5. Include the **account matching `cf_account_id`** in the token's account resources, and the **zone matching `cf_zone_id`** in its zone resources. Lists are account-level resources: zone permissions alone are not sufficient.
 6. Create the token and save it securely.
 
 > [!IMPORTANT]
 > The first time this workflow runs, the Custom WAF Rule is created. After the first run, you can remove the `Zone WAF > Edit` permission from the API token.
 
+## Troubleshooting
+
+Cloudflare requests validate the HTTP status, API `success` flag, and expected result before reading fields. Failures include the operation, HTTP status, Cloudflare error code/message (when available), and relevant permission/scope guidance. For example:
+
+```text
+Cloudflare GET /accounts/.../rules/lists: HTTP 403; 10000: Authentication error. Check cf_account_id and Account > Account Filter Lists > Edit; the token must include the target account.
+```
+
+- **Empty inputs / invalid IDs:** check Actions secrets and confirm Account ID and Zone ID are not swapped. Secrets may be unavailable to workflows from fork pull requests.
+- **Authentication or authorization failures:** use an API token, not the Global API Key; check expiry, permissions, account/zone scope, and any token client-IP restrictions. An authentication error alone does not identify which of these is wrong. [Lists API permissions](https://developers.cloudflare.com/api/resources/rules/subresources/lists/methods/list/).
+- **Non-JSON or malformed responses:** the action reports an invalid response rather than a misleading jq failure. Check Cloudflare service status and runner proxy/network configuration.
+- **Network/timeout failures:** requests are bounded and mutations are not automatically retried. A timed-out request may already have reached Cloudflare; inspect the resource state before rerunning.
+- **Cleanup/restoration failures:** post-run steps report API failures and fail instead of claiming success. Check the IP list and original Bot Fight Mode settings manually if cleanup fails or the runner is terminated before post-run steps can execute.
+
+If reporting an issue, include the failing step and sanitized error annotation, plus the action version. Never share API tokens or Authorization headers.
+
+## Development
+
+Offline regression tests use synthetic API responses and do not require Cloudflare credentials:
+
+```bash
+python3 -m pip install 'PyYAML==6.0.2'
+python3 -m unittest discover -s tests -v
+shellcheck scripts/cloudflare.sh
+```
+
+CI also runs two action invocations in the same real GitHub Actions job with a strict offline API fixture. A final post-job assertion checks that each invocation clears its own list and restores only its own BFM setting, even if later steps overwrite similarly named job environment variables. The matrix covers BFM on/off, SBFM, and Enterprise configurations; no Cloudflare credentials or live resources are used.
+
 ## Limitations
 
-- Cloudflare Free plan allows only **one custom IP list** per zone. If you already use a custom list, this action cannot create an additional one. [Learn more](https://developers.cloudflare.com/waf/tools/lists/#limits).
+- IP list writes are asynchronous. An accepted operation does not guarantee that the list has propagated yet; this action does not currently poll operation completion.
+- Each invocation keeps its state in scoped step outputs, so separate accounts/zones can be used in the same job without cleanup state collisions. The underlying list is still shared per account, and BFM settings are zone-wide: do not run overlapping jobs against the same resources; use workflow concurrency controls (and coordinate across repositories).
+- Initial list and WAF rule creation is not transactional. If rule creation fails after the list is created, repair the WAF rule before rerunning; an existing list does not prove setup completed.
+- Cloudflare Free plan allows only **one custom IP list** per account. If you already use a custom list, this action cannot create an additional one. [Learn more](https://developers.cloudflare.com/waf/tools/lists/#limits).
 - Cloudflare Free plan allows only **five custom WAF rules** per zone. If you are already at the quota, the initial setup step that creates the bypass rule will fail. [Learn more](https://developers.cloudflare.com/waf/custom-rules/limits/).
 
 ## How It Works

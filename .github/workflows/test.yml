@@ -1,0 +1,59 @@
+name: Tests
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  api-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install 'PyYAML==6.0.2'
+      - run: shellcheck scripts/cloudflare.sh
+      - run: python -m unittest discover -s tests -v
+  post-lifecycle:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        bot: [bfm-on, bfm-off, sbfm, enterprise]
+    env:
+      BOT_VARIANT: ${{ matrix.bot }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install offline API fixture
+        run: |
+          mkdir -p "$RUNNER_TEMP/fixture-bin"
+          cp tests/lifecycle_fixture.py "$RUNNER_TEMP/fixture-bin/curl"
+          chmod +x "$RUNNER_TEMP/fixture-bin/curl"
+          echo "$RUNNER_TEMP/fixture-bin" >> "$GITHUB_PATH"
+          echo "LIFECYCLE_LOG=$RUNNER_TEMP/cloudflare-lifecycle.jsonl" >> "$GITHUB_ENV"
+      # Registered first, so verification runs AFTER both actions' real post steps.
+      - uses: gacts/run-and-post-run@v1
+        with:
+          post: python3 '${{ github.workspace }}/tests/lifecycle_fixture.py' verify
+      - name: First invocation (existing list, BFM on)
+        uses: ./
+        with:
+          cf_account_id: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+          cf_zone_id: '11111111111111111111111111111111'
+          cf_api_token: fixture-a
+          disable_bot_fight_mode: 'true'
+          bfm_propagation_delay: '0'
+      - name: Second invocation (new list, different bot configuration)
+        uses: ./
+        with:
+          cf_account_id: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+          cf_zone_id: '22222222222222222222222222222222'
+          cf_api_token: fixture-b
+          disable_bot_fight_mode: 'true'
+          bfm_propagation_delay: '0'
+      - name: Prove post steps do not read job-global action state
+        run: |
+          echo 'list_id=poisoned' >> "$GITHUB_ENV"
+          echo 'bfm_original_fight_mode=false' >> "$GITHUB_ENV"
+          echo 'bfm_original_enable_js=false' >> "$GITHUB_ENV"
